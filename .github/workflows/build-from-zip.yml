@@ -1,0 +1,66 @@
+name: Build Windows app
+
+# Builds "Goyim Screener.exe" from the .zip in the main folder of this repo (any name, keep only one zip).
+# To update: delete the old zip, upload the new one, and commit.
+# Download the app from: Actions tab -> latest run -> Artifacts -> Windows-app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip the app
+        run: |
+          $zip = Get-ChildItem -Filter *.zip | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $zip) { throw "No .zip file in the main folder of the repo" }
+          Write-Host "Using $($zip.Name)"
+          Expand-Archive $zip.FullName -DestinationPath src -Force
+          $root = Get-ChildItem src -Recurse -Filter requirements.txt | Select-Object -First 1
+          if (-not $root) { throw "requirements.txt not found inside the zip" }
+          "APPDIR=$($root.DirectoryName)" | Out-File $env:GITHUB_ENV -Append
+          Write-Host "App folder: $($root.DirectoryName)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          cd $env:APPDIR
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build Goyim Screener.exe
+        run: |
+          cd $env:APPDIR
+          pyinstaller build/ema_zone.spec --noconfirm --clean
+
+      - name: Self-test the packaged app
+        run: |
+          cd $env:APPDIR
+          $exe = Get-ChildItem dist -Recurse -Filter *.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "Self-test failed (exit $($p.ExitCode))" }
+
+      - name: Zip
+        run: Compress-Archive -Path "$env:APPDIR/dist/*" -DestinationPath "Windows-app.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Windows-app
+          path: Windows-app.zip
+          retention-days: 30
